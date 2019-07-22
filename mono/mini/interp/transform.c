@@ -582,7 +582,7 @@ can_store (int st_value, int vt_value)
 	do { \
 		(td)->stack_capacity *= 2; \
 		(td)->stack = (StackInfo*)realloc ((td)->stack, (td)->stack_capacity * sizeof (td->stack [0])); \
-		(td)->sp = (td)->stack + sppos; \
+		(td)->sp = (td)->stack + (sppos); \
 	} while (0);
 
 #define PUSH_SIMPLE_TYPE(td, ty) \
@@ -608,6 +608,27 @@ can_store (int st_value, int vt_value)
 			REALLOC_STACK(td, sp_height); \
 		SET_TYPE((td)->sp - 1, ty, k); \
 	} while (0)
+
+static void
+move_stack (TransformData *td, int start, int amount)
+{
+	int sp_height = td->sp - td->stack;
+	int to_move = sp_height - start;
+
+	td->sp += amount;
+	sp_height += amount;
+	if (amount > 0) {
+		if (sp_height > td->max_stack_height)
+			td->max_stack_height = sp_height;
+		if (sp_height > td->stack_capacity)
+			REALLOC_STACK (td, sp_height);
+	} else {
+		g_assert (td->sp >= td->stack);
+	}
+
+	if (to_move > 0)
+		memmove (td->stack + start + amount, td->stack + start, to_move * sizeof (StackInfo));
+}
 
 #define PUSH_VT(td, size) \
 	do { \
@@ -1484,6 +1505,61 @@ interp_handle_intrinsics (TransformData *td, MonoMethod *target_method, MonoClas
 		if (!strcmp (tm, "MemoryBarrier") && csignature->param_count == 0)
 			*op = MINT_MONO_MEMORY_BARRIER;
 #endif
+	} else if (in_corlib &&
+			!strcmp (klass_name_space, "System.Runtime.CompilerServices") &&
+			!strcmp (klass_name, "JitHelpers") &&
+			(!strcmp (tm, "EnumEquals") || !strcmp (tm, "EnumCompareTo"))) {
+		MonoGenericContext *ctx = mono_method_get_context (target_method);
+		g_assert (ctx);
+		g_assert (ctx->method_inst);
+		g_assert (ctx->method_inst->type_argc == 1);
+		g_assert (csignature->param_count == 2);
+
+		MonoType *t = ctx->method_inst->type_argv [0];
+		t = mini_get_underlying_type (t);
+
+		gboolean is_i8 = (t->type == MONO_TYPE_I8 || t->type == MONO_TYPE_U8);
+		gboolean is_unsigned = (t->type == MONO_TYPE_U1 || t->type == MONO_TYPE_U2 || t->type == MONO_TYPE_U4 || t->type == MONO_TYPE_U8 || t->type == MONO_TYPE_U);
+
+		gboolean is_compareto = strcmp (tm, "EnumCompareTo") == 0;
+		if (is_compareto) {
+			int offseta, offsetb;
+			offseta = create_interp_local (td, t);
+			offsetb = create_interp_local (td, t);
+
+			// Save arguments
+			store_local_general (td, offsetb, t);
+			store_local_general (td, offseta, t);
+			// (a > b)
+			load_local_general (td, offseta, t);
+			load_local_general (td, offsetb, t);
+			if (is_unsigned)
+				interp_add_ins (td, is_i8 ? MINT_CGT_UN_I8 : MINT_CGT_UN_I4);
+			else
+				interp_add_ins (td, is_i8 ? MINT_CGT_I8 : MINT_CGT_I4);
+			td->sp --;
+			SET_SIMPLE_TYPE (td->sp - 1, STACK_TYPE_I4);
+			// (a < b)
+			load_local_general (td, offseta, t);
+			load_local_general (td, offsetb, t);
+			if (is_unsigned)
+				interp_add_ins (td, is_i8 ? MINT_CLT_UN_I8 : MINT_CLT_UN_I4);
+			else
+				interp_add_ins (td, is_i8 ? MINT_CLT_I8 : MINT_CLT_I4);
+			td->sp --;
+			SET_SIMPLE_TYPE (td->sp - 1, STACK_TYPE_I4);
+			// (a > b) - (a < b)
+			interp_add_ins (td, MINT_SUB_I4);
+			td->sp --;
+			td->ip += 5;
+			return TRUE;
+		} else {
+			if (is_i8) {
+				*op = MINT_CEQ_I8;
+			} else {
+				*op = MINT_CEQ_I4;
+			}
+		}
 	}
 
 	return FALSE;
@@ -4088,8 +4164,8 @@ generate_code (TransformData *td, MonoMethod *method, MonoMethodHeader *header, 
 				goto_if_nok (error, exit);
 			}
 
-			td->sp -= csignature->param_count;
 			if (mono_class_is_magic_int (klass) || mono_class_is_magic_float (klass)) {
+				td->sp -= csignature->param_count;
 #if SIZEOF_VOID_P == 8
 				if (mono_class_is_magic_int (klass) && td->sp [0].type == STACK_TYPE_I4)
 					interp_add_ins (td, MINT_CONV_I8_I4);
@@ -4117,22 +4193,46 @@ generate_code (TransformData *td, MonoMethod *method, MonoMethodHeader *header, 
 						!mono_class_is_marshalbyref (klass) &&
 						!mono_class_has_finalizer (klass) &&
 						!m_class_has_weak_fields (klass)) {
-					if (!m_class_is_valuetype (klass))
-						interp_add_ins (td, MINT_NEWOBJ_FAST);
-					else if (mint_type (m_class_get_byval_arg (klass)) == MINT_TYPE_VT)
-						interp_add_ins (td, MINT_NEWOBJ_VTST_FAST);
-					else
-						interp_add_ins (td, MINT_NEWOBJ_VT_FAST);
-
-					td->last_ins->data [0] = get_data_item_index (td, mono_interp_get_imethod (domain, m, error));
-					td->last_ins->data [1] = csignature->param_count;
-
 					if (!m_class_is_valuetype (klass)) {
+						InterpInst *newobj_fast = interp_add_ins (td, MINT_NEWOBJ_FAST);
+
+						newobj_fast->data [1] = csignature->param_count;
+
 						MonoVTable *vtable = mono_class_vtable_checked (domain, klass, error);
 						goto_if_nok (error, exit);
-						td->last_ins->data [2] = get_data_item_index (td, vtable);
-					} else if (mint_type (m_class_get_byval_arg (klass)) == MINT_TYPE_VT) {
-						td->last_ins->data [2] = mono_class_value_size (klass, NULL);
+						newobj_fast->data [2] = get_data_item_index (td, vtable);
+
+						move_stack (td, (td->sp - td->stack) - csignature->param_count, 2);
+
+						StackInfo *tmp_sp = td->sp - csignature->param_count - 2;
+						SET_TYPE (tmp_sp, STACK_TYPE_O, klass);
+						SET_TYPE (tmp_sp + 1, STACK_TYPE_O, klass);
+
+						if ((mono_interp_opt & INTERP_OPT_INLINE) && interp_method_check_inlining (td, m)) {
+							MonoMethodHeader *mheader = interp_method_get_header (m, error);
+							goto_if_nok (error, exit);
+
+							if (interp_inline_method (td, m, mheader, error)) {
+								newobj_fast->data [0] = 0xffff;
+								break;
+							}
+						}
+						// If inlining failed we need to restore the stack
+						move_stack (td, (td->sp - td->stack) - csignature->param_count, -2);
+						// Set the method to be executed as part of newobj instruction
+						newobj_fast->data [0] = get_data_item_index (td, mono_interp_get_imethod (domain, m, error));
+					} else {
+						if (mint_type (m_class_get_byval_arg (klass)) == MINT_TYPE_VT)
+							interp_add_ins (td, MINT_NEWOBJ_VTST_FAST);
+						else
+							interp_add_ins (td, MINT_NEWOBJ_VT_FAST);
+
+						td->last_ins->data [0] = get_data_item_index (td, mono_interp_get_imethod (domain, m, error));
+						td->last_ins->data [1] = csignature->param_count;
+
+						if (mint_type (m_class_get_byval_arg (klass)) == MINT_TYPE_VT) {
+							td->last_ins->data [2] = mono_class_value_size (klass, NULL);
+						}
 					}
 				} else {
 					interp_add_ins (td, MINT_NEWOBJ);
@@ -4140,6 +4240,7 @@ generate_code (TransformData *td, MonoMethod *method, MonoMethodHeader *header, 
 				}
 				goto_if_nok (error, exit);
 
+				td->sp -= csignature->param_count;
 				if (mint_type (m_class_get_byval_arg (klass)) == MINT_TYPE_VT) {
 					vt_res_size = mono_class_value_size (klass, NULL);
 					PUSH_VT (td, vt_res_size);

@@ -30,7 +30,7 @@
 #include <windows.h>
 
 typedef DWORD MonoNativeThreadId;
-typedef HANDLE MonoNativeThreadHandle; /* unused */
+typedef HANDLE MonoNativeThreadHandle;
 
 typedef DWORD mono_native_thread_return_t;
 typedef DWORD mono_thread_start_return_t;
@@ -72,6 +72,9 @@ typedef gsize (*MonoThreadStart)(gpointer);
 #endif /* !defined(__HAIKU__) */
 
 #endif /* #ifdef HOST_WIN32 */
+
+#define MONO_NATIVE_THREAD_HANDLE_TO_GPOINTER(handle) ((gpointer)(gsize)(handle))
+#define MONO_GPOINTER_TO_NATIVE_THREAD_HANDLE(handle) ((MonoNativeThreadHandle)(gsize)(handle))
 
 #define MONO_INFINITE_WAIT ((guint32) 0xFFFFFFFF)
 
@@ -536,6 +539,12 @@ mono_threads_open_thread_handle (MonoThreadHandle *handle);
 void
 mono_threads_close_thread_handle (MonoThreadHandle *handle);
 
+MonoNativeThreadHandle
+mono_threads_open_native_thread_handle (MonoNativeThreadHandle handle);
+
+void
+mono_threads_close_native_thread_handle (MonoNativeThreadHandle handle);
+
 #if !defined(HOST_WIN32)
 
 /*Use this instead of pthread_kill */
@@ -612,6 +621,16 @@ void mono_threads_coop_end_global_suspend (void);
 
 MONO_API MonoNativeThreadId
 mono_native_thread_id_get (void);
+
+/*
+ * This does _not_ return the same value as mono_native_thread_id_get, except on Windows.
+ * On POSIX, mono_native_thread_id_get returns the value from pthread_self, which is then
+ * passed around as an identifier to other pthread functions. However this function, where 
+ * possible, returns the OS-unique thread id value, fetched in a platform-specific manner. 
+ * It will not work with the various pthread functions, should never be used as a
+ * MonoNativeThreadId, and is intended solely to match the output of various diagonistic tools.
+ */
+guint64 mono_native_thread_os_id_get (void);
 
 MONO_API gboolean
 mono_native_thread_id_equals (MonoNativeThreadId id1, MonoNativeThreadId id2);

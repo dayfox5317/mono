@@ -164,7 +164,7 @@ libmonoruntime_config_la_CPPFLAGS = $(AM_CPPFLAGS) -DMONO_BINDIR=\"$(bindir)/\" 
 # Support is a separate library because it is not valid C++.
 #
 libmonoruntime_support_la_SOURCES = $(support_sources)
-libmonoruntime_support_la_CFLAGS = $(filter-out @CXX_REMOVE_CFLAGS@, @CFLAGS@)
+libmonoruntime_support_la_CFLAGS = $(filter-out @CXX_REMOVE_CFLAGS@, @CFLAGS@) @ZLIB_CFLAGS@
 if HAVE_STATIC_ZLIB
 libmonoruntime_support_la_LDFLAGS = $(STATIC_ZLIB_PATH)
 else
@@ -245,6 +245,7 @@ endif
 common_sources = \
 	$(platform_sources)	\
 	appdomain.c	\
+	assembly-load-context.c	\
 	domain.c	\
 	appdomain-icalls.h	\
 	assembly.c		\
@@ -299,6 +300,10 @@ common_sources = \
 	jit-info.c		\
 	loader.c		\
 	loader-internals.h	\
+	loaded-images-internals.h		\
+	loaded-images.c		\
+	loaded-images-global.c	\
+	loaded-images-netcore.c	\
 	locales.c		\
 	locales.h		\
 	lock-tracer.c		\
@@ -361,6 +366,7 @@ common_sources = \
 	remoting.h		\
 	remoting.c		\
 	runtime.c		\
+	runtime.h		\
 	mono-security.c		\
 	security.h		\
 	security-core-clr.c	\
@@ -419,6 +425,7 @@ common_sources = \
 	callspec.h	\
 	callspec.c	\
 	abi.c
+
 
 # These source files have compile time dependencies on GC code
 gc_dependent_sources = \
@@ -492,6 +499,6 @@ libmonoruntimeinclude_HEADERS = \
 	tokentype.h		\
 	verify.h		
 
-EXTRA_DIST = $(null_sources) runtime.h \
+EXTRA_DIST = $(null_sources) \
 		external-only.c \
 		threadpool-io-poll.c threadpool-io-epoll.c threadpool-io-kqueue.c

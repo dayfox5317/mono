@@ -7,13 +7,14 @@ ANDROID_TOOLCHAIN_PREFIX?=$(ANDROID_TOOLCHAIN_DIR)/toolchains
 ANDROID_NEW_NDK=$(shell if test `grep 'Pkg\.Revision' $(ANDROID_TOOLCHAIN_DIR)/ndk/source.properties | cut -d '=' -f 2 | tr -d ' ' | cut -d '.' -f 1` -ge 18; then echo yes; else echo no; fi)
 
 android_SOURCES_DIR = $(TOP)/sdks/out/android-sources
-android_HOST_DARWIN_LIB_DIR = $(TOP)/sdks/out/android-host-Darwin-release/lib
-android_HOST_DARWIN_BIN_DIR = $(TOP)/sdks/out/android-host-Darwin-release/bin
+android_TPN_DIR = $(TOP)/sdks/out/android-tpn
+android_HOST_DARWIN_LIB_DIR = $(TOP)/sdks/out/android-host-Darwin-$(CONFIGURATION)/lib
+android_HOST_DARWIN_BIN_DIR = $(TOP)/sdks/out/android-host-Darwin-$(CONFIGURATION)/bin
 android_PLATFORM_BIN=$(XCODE_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/bin
 
-ifeq ($(UNAME),Darwin)
-android_ARCHIVE += android-sources
-ADDITIONAL_PACKAGE_DEPS += $(android_SOURCES_DIR) $(android_HOST_DARWIN_LIB_DIR)/.stamp-android-loader-path
+ifneq (,$(filter $(UNAME),Darwin Linux))
+android_ARCHIVE += android-sources android-tpn
+ADDITIONAL_PACKAGE_DEPS += $(android_SOURCES_DIR) $(android_TPN_DIR)
 endif
 
 ##
@@ -134,7 +135,7 @@ _android-$(1)_CONFIGURE_FLAGS= \
 	--disable-nls \
 	--enable-dynamic-btls \
 	--enable-maintainer-mode \
-	--enable-minimal=ssa,portability,attach,verifier,full_messages,sgen_remset,sgen_marksweep_par,sgen_marksweep_fixed,sgen_marksweep_fixed_par,sgen_copying,logging,security,shared_handles,interpreter \
+	--enable-minimal=ssa,portability,attach,verifier,full_messages,sgen_remset,sgen_marksweep_par,sgen_marksweep_fixed,sgen_marksweep_fixed_par,sgen_copying,logging,security,shared_handles,interpreter,gac \
 	--enable-monodroid \
 	--with-btls-android-ndk=$$(ANDROID_TOOLCHAIN_DIR)/ndk \
 	--with-btls-android-api=$$(ANDROID_SDK_VERSION_$(1)) \
@@ -249,6 +250,10 @@ _android-$(1)_CONFIGURE_FLAGS= \
 	touch $$@
 
 $$(eval $$(call RuntimeTemplate,android,$(1)))
+
+ifeq ($$(UNAME),Darwin)
+ADDITIONAL_PACKAGE_DEPS += $$(android_HOST_DARWIN_LIB_DIR)/.stamp-android-loader-path
+endif
 
 endef
 
@@ -488,7 +493,11 @@ $(android_SOURCES_DIR)/external/linker/README.md:  # we use this as a sentinel f
 
 $(android_SOURCES_DIR): $(android_SOURCES_DIR)/external/linker/README.md
 
-$(android_HOST_DARWIN_LIB_DIR): $(android_HOST_DARWIN_LIB_DIR)/.stamp-android-loader-path
+$(android_TPN_DIR)/LICENSE:
+	mkdir -p $(android_TPN_DIR)
+	cd $(TOP) && rsync -r --include='THIRD-PARTY-NOTICES.TXT' --include='license.txt' --include='License.txt' --include='LICENSE' --include='LICENSE.txt' --include='LICENSE.TXT' --include='COPYRIGHT.regex' --include='*/' --exclude="*" --prune-empty-dirs . $(android_TPN_DIR)
+
+$(android_TPN_DIR): $(android_TPN_DIR)/LICENSE
 
 $(android_HOST_DARWIN_LIB_DIR)/.stamp-android-loader-path: package-android-host-Darwin
 	$(android_PLATFORM_BIN)/install_name_tool -id @loader_path/libmonosgen-2.0.dylib $(android_HOST_DARWIN_LIB_DIR)/libmonosgen-2.0.dylib

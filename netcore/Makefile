@@ -126,7 +126,8 @@ update-tests-corefx: corefx/.stamp-dl-corefx-tests-$(NETCORETESTS_VERSION)
 
 corefx/.stamp-dl-corefx-tests-$(NETCORETESTS_VERSION):
 	curl $(TEST_ASSETS_URL) --output corefx-test-assets.xml
-	python dl-test-assets.py corefx-test-assets.xml $(FEED_BASE_URL) corefx/tests
+	./dl-test-assets.py corefx-test-assets.xml $(FEED_BASE_URL) corefx/tests
+	rm -rf corefx/tests/extracted/System.Utf8String.Experimental.Tests
 	touch $@
 
 #
@@ -168,7 +169,7 @@ build-test-corefx-%:
 	rm -rf $(COREFX_ROOT)/src/$*/tests/tmp
 
 xunit-summary:
-	python xunit-summary.py "corefx/tests"
+	./xunit-summary.py "corefx/tests"
 
 endif
 

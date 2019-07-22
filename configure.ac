@@ -299,6 +299,12 @@ case "$host" in
 		CFLAGS="$CFLAGS -DPAGE_SIZE=4096 -DS_IWRITE=S_IWUSR"
 		CXXFLAGS="$CXXFLAGS -DPAGE_SIZE=4096 -DS_IWRITE=S_IWUSR"
 
+		# FIXME? Only if __ANDROID_API__ < 24?
+		# FILE32API means "long", which is stuck at 32bits for 32bit ABI (64bits for 64bit ABI).
+		# ABI 24 introduces the "o" for "file offset" variations, which can be widened to 64bits for 32bit ABI (and still 64bits for 64bit).
+		# Android itself uses FILE32API, and mono should use system zlib on Android anyway.
+		ZLIB_CFLAGS="$ZLIB_CFLAGS -DUSE_FILE32API"
+
 		# to bypass the underscore linker check, can't work when cross-compiling
 		mono_cv_uscore=yes
 		mono_cv_clang=no
@@ -525,7 +531,9 @@ case "$host" in
 		with_gc=sgen
 		need_link_unlink=yes
 		use_sigposix=yes
-		dnl the valloc call to alloc the guard page bombs out, even with extending the data area
+		dnl Similar limitation to macOS about the first thread and the
+		dnl guard page, except sometimes the runtime hangs. Disable for
+		dnl now until cause can be determined or it seems OK enough.
 		with_sigaltstack=no
 		dnl use pthread TLS, __thread has issues with the compiler flags we use
 		with_tls=pthread
@@ -668,8 +676,16 @@ AC_PROG_LD_GNU
 
 AC_CHECK_HEADERS(sys/filio.h sys/sockio.h netdb.h utime.h sys/utime.h semaphore.h sys/un.h linux/rtc.h sys/syscall.h sys/mkdev.h sys/uio.h sys/param.h sys/sysctl.h libproc.h sys/prctl.h copyfile.h)
 AC_CHECK_HEADERS(sys/param.h sys/socket.h sys/ipc.h sys/utsname.h alloca.h ucontext.h pwd.h sys/select.h netinet/tcp.h netinet/in.h unistd.h sys/types.h link.h asm/sigcontext.h sys/inotify.h arpa/inet.h complex.h unwind.h)
-AC_CHECK_HEADER(unistd.h, [HAVE_UNISTD_H=1], [HAVE_UNISTD_H=0])
+
+# zlib/configure checks for unistd.h existance and defines HAVE_UNISTD_H on the compiler
+# command line (not config.h) if it is present.
+AC_CHECK_HEADER(unistd.h,
+    [HAVE_UNISTD_H=1
+     ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_UNISTD_H"],
+    [HAVE_UNISTD_H=0])
+
 AC_SUBST(HAVE_UNISTD_H)
+
 AC_CHECK_HEADERS([linux/netlink.h linux/rtnetlink.h],
                   [], [], [#include <stddef.h>
 		  #include <sys/socket.h>
@@ -1344,6 +1360,7 @@ elif test x$with_runtime_preset = xnetcore; then
    mono_feature_disable_security='yes'
    mono_feature_disable_mdb='yes'
    mono_feature_disable_com='yes'
+   mono_feature_disable_gac='yes'
    disable_mono_native=yes
    support_boehm=no
 elif test x$with_runtime_preset = xnet_4_x; then
@@ -1719,7 +1736,7 @@ AM_CONDITIONAL(ENABLE_STATIC_GCC_LIBS, test "x$enable_static_gcc_libs" = "xyes")
 AC_ARG_ENABLE(minimal, [  --enable-minimal=LIST      drop support for LIST subsystems.
      LIST is a comma-separated list from: aot, profiler, decimal, pinvoke, debug, appdomains, verifier, 
      reflection_emit, reflection_emit_save, large_code, logging, com, ssa, generics, attach, jit, interpreter, simd, soft_debug, perfcounters, normalization, desktop_loader, shared_perfcounters, remoting,
-	 security, lldb, mdb, assert_messages, cleanup, sgen_marksweep_conc, sgen_split_nursery, sgen_gc_bridge, sgen_debug_helpers, sockets.],
+	 security, lldb, mdb, assert_messages, cleanup, sgen_marksweep_conc, sgen_split_nursery, sgen_gc_bridge, sgen_debug_helpers, sockets, gac.],
 [
 	for feature in `echo "$enable_minimal" | sed -e "s/,/ /g"`; do
 		eval "mono_feature_disable_$feature='yes'"
@@ -1924,6 +1941,11 @@ fi
 if test "x$mono_feature_disable_sockets" = "xyes"; then
 	AC_DEFINE(DISABLE_SOCKETS, 1, [Disable sockets])
 	AC_MSG_NOTICE([Disabled sockets])
+fi
+
+if test "x$mono_feature_disable_gac" = "xyes"; then
+	AC_DEFINE(DISABLE_GAC, 1, [Disable GAC])
+	AC_MSG_NOTICE([Disabled GAC support])
 fi
 
 AC_ARG_ENABLE(executables, [  --disable-executables disable the build of the runtime executables], enable_executables=$enableval, enable_executables=yes)
@@ -3338,6 +3360,7 @@ if test x$host_win32 = xno; then
 	AC_CHECK_DECL(F_DUPFD_CLOEXEC,   [AC_DEFINE(HAVE_F_DUPFD_CLOEXEC, 1, [F_DUPFD_CLOEXEC])], [], [[#include <fcntl.h>]])
 
 	# AC_CHECK_FUNC(getifaddrs,           [AC_DEFINE(HAVE_GETIFADDRS, 1, [getifaddrs])]) # already done above
+	AC_CHECK_FUNC(Qp2getifaddrs,     [AC_DEFINE(HAVE_QP2GETIFADDRS, 1, [Qp2getifaddrs])])
 
 	AC_CHECK_FUNC(lseek64,           [AC_DEFINE(HAVE_LSEEK64, 1, [lseek64])])
 	AC_CHECK_FUNC(mmap64,            [AC_DEFINE(HAVE_MMAP64, 1, [mmap64])])
@@ -3943,14 +3966,6 @@ else
 	], [
 		AC_MSG_RESULT(no)
 	])
-
-	AC_CHECK_DECLS(InterlockedExchange64, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(InterlockedCompareExchange64, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(InterlockedDecrement64, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(InterlockedIncrement64, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(InterlockedAdd, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(InterlockedAdd64, [], [], [[#include <windows.h>]])
-	AC_CHECK_DECLS(__readfsdword, [], [], [[#include <windows.h>]])
 fi
 
 dnl socklen_t check
@@ -4856,8 +4871,11 @@ else
   AC_DEFINE_UNQUOTED(SIZEOF_REGISTER,${target_sizeof_void_p},[size of target machine integer registers])
 fi
 
+# zlib/configure detects visibility support similarly and defines HAVE_HIDDEN
+# on the compiler command line (not config.h).
 if test "x$have_visibility_hidden" = "xyes"; then
    AC_DEFINE(HAVE_VISIBILITY_HIDDEN, 1, [Support for the visibility ("hidden") attribute])
+   ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_HIDDEN"
 fi
 
 if test "x$have_deprecated" = "xyes"; then
@@ -6590,9 +6608,26 @@ if test x"$GCC" = xyes; then
 	JAY_CFLAGS="-Wno-implicit-function-declaration"
 fi
 
+# zlib/configure checks if this program compiles and if so
+# defines _LARGEFILE64_SOURCE on the compiler command line (not config.h).
+#
+AC_MSG_CHECKING([for large file support])
+AC_COMPILE_IFELSE(
+	[
+		#include <sys/types.h>
+		off64_t dummy = 0;
+	], [
+		AC_MSG_RESULT(yes)
+		# FIXME The ramifications of _LARGEFILE64_SOURCE are not understood.
+		# ZLIB_CFLAGS="$ZLIB_CFLAGS -D_LARGEFILE64_SOURCE=1"
+	], [
+		AC_MSG_RESULT(no)
+	])
+
 AC_SUBST(CFLAGS)
 AC_SUBST(CPPFLAGS)
 AC_SUBST(LDFLAGS)
+AC_SUBST(ZLIB_CFLAGS)
 
 # Update all submodules recursively to ensure everything is checked out
 if test "x$with_core" != "xonly"; then
